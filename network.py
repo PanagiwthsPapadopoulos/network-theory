@@ -99,6 +99,122 @@ def calculate_distance_quality(G, partition):
 
     return Q_d
 
+
+def compute_observed_distance(cluster, G):
+    """
+    Compute the observed average pairwise distance within a cluster.
+    Penalize disconnected pairs with a specified penalty.
+    """
+    if len(cluster) <= 1:
+        return 0  # Single node or empty cluster
+
+    # Subgraph for the cluster
+    subgraph = G.subgraph(cluster)
+    distances = []
+    
+    try:
+        graph_diameter = nx.diameter(G)
+    except nx.NetworkXError:
+        graph_diameter = float('inf')  # Infinite for disconnected graphs
+
+    penalty = 3*graph_diameter
+
+    for u in cluster:
+        for v in cluster:
+            if u != v:
+                try:
+                    distances.append(nx.shortest_path_length(subgraph, source=u, target=v))
+                except nx.NetworkXNoPath:
+                    distances.append(penalty)  # Apply penalty for disconnected pairs
+
+    return distances/2 if distances else penalty/2
+
+
+def compute_expected_distance(cluster, G, num_random_graphs=10):
+    """
+    Compute the expected average pairwise distance for the same cluster in a random graph model.
+    Penalize disconnected pairs with a specified penalty.
+    """
+    if len(cluster) <= 1:
+        return 0  # Single node or empty cluster
+
+    try:
+        graph_diameter = nx.diameter(G)
+    except nx.NetworkXError:
+        graph_diameter = float('inf')  # Infinite for disconnected graphs
+
+    penalty = 3*graph_diameter
+
+    total_distance = 0
+    valid_graphs = 0
+
+    for _ in range(num_random_graphs):
+        random_graph = nx.configuration_model([d for _, d in G.degree()])
+        random_graph = nx.Graph(random_graph)  # Convert to a simple graph
+        random_graph.remove_edges_from(nx.selfloop_edges(random_graph))  # Remove self-loops
+
+        # Subgraph for the cluster in the random graph
+        subgraph = random_graph.subgraph(cluster)
+
+        distances = []
+        for u in cluster:
+            for v in cluster:
+                if u != v:
+                    try:
+                        distances.append(nx.shortest_path_length(subgraph, source=u, target=v))
+                    except nx.NetworkXNoPath:
+                        distances.append(penalty)  # Apply penalty for disconnected pairs
+
+        if distances:
+            total_distance += np.mean(distances)
+            valid_graphs += 1
+
+    return total_distance / valid_graphs if valid_graphs > 0 else penalty
+
+
+def compute_inter_cluster_distance(partition, G):
+    """
+    Compute the average inter-cluster distance for all pairs of clusters.
+    """
+    inter_cluster_distances = []
+    for i, cluster1 in enumerate(partition):
+        for j, cluster2 in enumerate(partition):
+            if i < j:  # Avoid double-counting pairs
+                for u in cluster1:
+                    for v in cluster2:
+                        try:
+                            inter_cluster_distances.append(nx.shortest_path_length(G, source=u, target=v))
+                        except nx.NetworkXNoPath:
+                            inter_cluster_distances.append(penalty)  # Apply penalty for disconnected pairs
+
+    return np.mean(inter_cluster_distances) if inter_cluster_distances else penalty
+
+
+def calculate_distance_quality(G, partition, num_random_graphs=10):
+    """
+    Calculate the Distance Quality Function (Q_d) for a given graph and partition.
+    - Includes penalties for disconnected clusters.
+    - Does not penalize based on the number of clusters.
+    - Normalizes by graph size for scale invariance.
+    """
+
+
+    Q_d_intra = 0
+    for cluster in partition:
+        observed_distance = compute_observed_distance(cluster, G)
+        expected_distance = compute_expected_distance(cluster, G, num_random_graphs)
+        Q_d_intra += (expected_distance - observed_distance)
+
+    # Complementarity: Add inter-cluster distances to the evaluation
+    # inter_cluster_distance = compute_inter_cluster_distance(partition, G)
+    # Q_d = Q_d_intra - inter_cluster_distance
+    Q_d = Q_d_intra
+    # Normalize by the graph size (scale invariance)
+    total_node_pairs = G.number_of_nodes() * (G.number_of_nodes() - 1)
+    Q_d /= total_node_pairs
+
+    return Q_d
+
 def maximize_distance_quality(
     G, initial_partition, calculate_distance_quality, max_iterations=100, max_no_improvement=10
 ):
@@ -122,27 +238,44 @@ def maximize_distance_quality(
             # Remove the node from its current cluster
             for cluster in partition:
                 if node in cluster:
+                    current_cluster = cluster
                     cluster.remove(node)
                     break
+
+            # Track the best move for this node
+            best_cluster = None
 
             # Test moving the node to each cluster
             for cluster in partition:
                 cluster.add(node)
                 new_qd = calculate_distance_quality(G, partition)
+                print(f'Tried moving node {node} to cluster {cluster} with distance quality of {new_qd}')
                 if new_qd > best_qd:
                     best_qd = new_qd
-                    best_partition = [set(c) for c in partition]
+                    best_cluster = cluster
                 cluster.remove(node)  # Undo the move
 
             # Test creating a new cluster for the node
-            partition.append({node})
+            new_cluster = {node}
+            partition.append(new_cluster)
             new_qd = calculate_distance_quality(G, partition)
+            print(f'Tried moving node {node} to cluster {cluster} with distance quality of {new_qd}')
             if new_qd > best_qd:
                 best_qd = new_qd
-                best_partition = [set(c) for c in partition]
+                best_cluster = new_cluster
             partition.pop()  # Undo the move
 
-        # Update partition and Q_d if improvement occurs
+            # Assign the node to the best cluster (if any improvement was found)
+            if best_cluster:
+                if best_cluster is not new_cluster:
+                    best_cluster.add(node)
+                else:
+                    partition.append(new_cluster)
+            else:
+                # If no improvement, restore the node to its original cluster
+                current_cluster.add(node)
+
+        # Update the global partition and Q_d if improvement occurs
         if best_qd > max_qd:
             max_qd = best_qd
             improved = True
@@ -157,7 +290,7 @@ def maximize_distance_quality(
         if no_improvement_count >= max_no_improvement:
             print("Stopping: No improvement for consecutive iterations.")
             break
-
+        # visualize_graph(G, partition, iterations)
         iterations += 1
 
     return partition, max_qd, qd_values
@@ -170,37 +303,70 @@ def random_partition(G, num_clusters):
         partition[i % num_clusters].add(node)
     return partition
 
+def visualize_graph(G, partition, iteration):
+    """
+    Visualize the graph with nodes colored by their cluster.
+    """
+    # Assign a unique color to each cluster
+    cluster_colors = {}
+    for i, cluster in enumerate(partition):
+        for node in cluster:
+            cluster_colors[node] = i
+
+    # Create a color list for nodes
+    node_colors = [cluster_colors[node] for node in G.nodes()]
+
+    # Plot the graph
+    plt.figure(figsize=(8, 6))
+    pos = nx.spring_layout(G)  # Spring layout for better visualization
+    nx.draw(
+        G, pos, with_labels=True, node_color=node_colors, cmap=plt.cm.Set3, node_size=300
+    )
+    plt.title(f"Graph Clustering at Iteration {iteration}")
+    plt.show()
+
 # Main Script
 if __name__ == "__main__":
 
     G = nx.karate_club_graph()
+    n=5
+
+    G = nx.complete_graph(n)
+    partition = [set(G.nodes())] 
+    score = calculate_distance_quality(G, partition)
+    print(f"Score for connected graph: {score}")
+
+    G = nx.star_graph(n - 1)  # One central node (0), n-1 peripheral nodes
+    partition = [set(G.nodes())]  # One cluster with all nodes
+    score = calculate_distance_quality(G, partition)
+    print(f"Score for star graph: {score}")
 
     # Initial partition, Single Cluster
-    # initial_partition = [set(G.nodes())]
+    initial_partition = [set(G.nodes())]
 
     # Initial partition, Random Clusters
-    initial_partition = random_partition(G, 3)  # Randomly split into 3 clusters
+    # initial_partition = random_partition(G, 3)  # Randomly split into 3 clusters
 
     # Initial partition, Modularity partition
     # modularity_clusters = greedy_modularity_communities(G)
     # initial_partition = [set(cluster) for cluster in modularity_clusters]
 
     # Perform the search
-    best_partition, max_qd, qd_values = maximize_distance_quality(
-        G, initial_partition, calculate_distance_quality
-    )
+    # best_partition, max_qd, qd_values = maximize_distance_quality(
+    #     G, initial_partition, calculate_distance_quality
+    # )
 
     # Visualize the results
-    print("Best Partition:", best_partition)
-    print("Maximum Q_d:", max_qd)
-    print(f"qd_values.len = {len(qd_values)}")
-    # Plot the progress of Q_d
-    plt.plot(qd_values, marker='o')
-    plt.title("Distance Quality (Q_d) Progress Over Iterations")
-    plt.xlabel("Iteration")
-    plt.ylabel("Q_d")
-    plt.grid()
-    plt.show()
+    # print("Best Partition:", best_partition)
+    # print("Maximum Q_d:", max_qd)
+    # print(f"qd_values.len = {len(qd_values)}")
+    # # Plot the progress of Q_d
+    # plt.plot(qd_values, marker='o')
+    # plt.title("Distance Quality (Q_d) Progress Over Iterations")
+    # plt.xlabel("Iteration")
+    # plt.ylabel("Q_d")
+    # plt.grid()
+    # plt.show()
 
     # # Load the graph
     # print("Loading the email-Eu-core network...")
