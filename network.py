@@ -50,8 +50,6 @@ def export_to_gephi(G, communities, output_file):
     nx.write_gexf(G, output_file)
     print(f"Graph exported to {output_file} for Gephi visualization.")
 
-
-
 def calculate_distance_quality(G, partition, num_random_graphs=1):
     """
     Calculate the Distance Quality Function (Q_d) for a given graph and partition.
@@ -108,11 +106,7 @@ def calculate_distance_quality(G, partition, num_random_graphs=1):
         for _ in range(num_random_graphs):
             # Generate a random graph with the same degree distribution
             random_graph = nx.expected_degree_graph([d for _, d in G.degree()], selfloops=False)
-            # print(nx.is_connected(random_graph))
-            # print(len(random_graph.edges()))
-            # Skip disconnected random graphs
-            # if not nx.is_connected(random_graph):
-            #     continue
+            
             # visualize_graph(random_graph)
 
             # Check if the random graph is connected
@@ -145,9 +139,8 @@ def calculate_distance_quality(G, partition, num_random_graphs=1):
         Q_d += expected_distance - observed_distance
 
     # Normalize Q_d by the total number of nodes for scale invariance
-    Q_d /= len(G.nodes())
+    Q_d /= G.number_of_edges()
     return Q_d, observed_distance, expected_distance, len(G.nodes())
-
 
 def maximize_distance_quality(
     G, initial_partition, calculate_distance_quality, max_iterations=100, max_no_improvement=10
@@ -339,46 +332,92 @@ def visualize_graph(G, partition=None):
         nx.draw(G, pos, with_labels=True)
     plt.show()
 
+def generate_connected_graph(num_nodes, density=0.5):
+    """
+    Generates a random connected graph with the specified density.
+
+    Parameters:
+    - num_nodes (int): Number of nodes in the graph.
+    - density (float): Desired density of the graph (0 < density ≤ 1).
+
+    Returns:
+    - networkx.Graph: A connected random graph.
+    """
+    if density <= 0 or density > 1:
+        raise ValueError("Density must be between 0 and 1.")
+    if num_nodes < 2:
+        raise ValueError("Number of nodes must be at least 2.")
+
+    # Step 1: Create a fully connected graph
+    full_graph = nx.complete_graph(num_nodes)
+
+    # Step 2: Generate a random spanning tree (ensures connectivity)
+    spanning_tree_edges = list(nx.minimum_spanning_edges(full_graph, algorithm="kruskal", data=False))
+    G = nx.Graph()
+    G.add_edges_from(spanning_tree_edges)
+
+    # Step 3: Add extra edges to meet the density requirement
+    max_edges = num_nodes * (num_nodes - 1) // 2  # Maximum possible edges in a complete graph
+    target_edges = int(max_edges * density)
+
+    # Get all possible edges and exclude existing ones
+    possible_edges = set(full_graph.edges()) - set(G.edges())
+    remaining_edges = list(possible_edges)
+
+    random.shuffle(remaining_edges)
+    extra_edges = target_edges - len(G.edges())
+
+    for edge in remaining_edges[:extra_edges]:
+        G.add_edge(*edge)
+
+    return G
+
 # Main Script
 if __name__ == "__main__":
 
-    
+    # --------------------------------------------------  Baseline Graphs Evaluation  ------------------------------------------------------------ #
 
-    # Parameters for graph generation
-    num_nodes = 200  # Number of nodes in the graph
-    num_clusters = 10  # Number of random clusters
-    graph_types = [ 'star', 'cycle', 'complete']
+    # # Parameters for graph generation
+    # num_nodes = 200  # Number of nodes in the graph
+    # num_clusters = 10  # Number of random clusters
+    # graph_types = [ 'star', 'cycle', 'complete']
 
-    # Generate and partition graphs
-    for graph_type in graph_types:
-        print(f"\nGenerating a {graph_type} graph with {num_nodes} nodes...")
-        G = generate_graph(graph_type, num_nodes)
+    # # Generate and partition graphs
+    # for graph_type in graph_types:
+    #     print(f"\nGenerating a {graph_type} graph with {num_nodes} nodes...")
+    #     G = generate_graph(graph_type, num_nodes)
         
-        # Random partition
-        partition = generate_random_partition(G, num_clusters)
+    #     # Random partition
+    #     partition = generate_random_partition(G, num_clusters)
         
-        # Display graph and partition
-        print(f"Graph type: {graph_type}")
-        display_partition(partition)
+    #     # Display graph and partition
+    #     print(f"Graph type: {graph_type}")
+    #     display_partition(partition)
 
 
-        dq, observed_distance, expected_distance, n = calculate_distance_quality(G, partition, 1)
-        print(f"Distance quality: {dq}, observed_distance: {observed_distance}, expected_distance: {expected_distance}, number of nodes: {n}")
+    #     dq, observed_distance, expected_distance, n = calculate_distance_quality(G, partition, 1)
+    #     print(f"Distance quality: {dq}, observed_distance: {observed_distance}, expected_distance: {expected_distance}, number of nodes: {n}")
         
         # Visualize the graph
         # visualize_graph(G, partition)
 
-    G = load_snap_email_network()
 
+    # ---------------------------------------- Maximize Distance Quality ---------------------------------------- #
+    G = generate_connected_graph(600)
+    
     # Initial partition, Random Clusters
-    # initial_partition = random_partition(G, 3)  # Randomly split into 3 clusters
+    partition = generate_random_partition(G, 10)
+    dq, observed_distance, expected_distance, n = calculate_distance_quality(G, partition, 1)
+    print(f"Distance quality: {dq}, observed_distance: {observed_distance}, expected_distance: {expected_distance}, number of nodes: {n}")
+
 
     # Initial partition, Modularity partition
-    # modularity_clusters = greedy_modularity_communities(G)
-    # initial_partition = [set(cluster) for cluster in modularity_clusters]
+    modularity_clusters = greedy_modularity_communities(G)
+    partition = [set(cluster) for cluster in modularity_clusters]
 
-    # dq = calculate_distance_quality(G, initial_partition, 1)
-    # print(f"Distance quality: {dq}")
+
+    dq, observed_distance, expected_distance, n = calculate_distance_quality(G, partition, 1)
+    print(f"Distance quality: {dq}, observed_distance: {observed_distance}, expected_distance: {expected_distance}, number of nodes: {n}")
 
     # Perform the search
     # best_partition, max_qd, qd_values = maximize_distance_quality(
