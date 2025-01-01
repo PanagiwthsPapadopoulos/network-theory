@@ -4,6 +4,7 @@ import networkx as nx
 from networkx.algorithms.community import greedy_modularity_communities
 import numpy as np
 import requests
+import random
 
 
 
@@ -49,171 +50,104 @@ def export_to_gephi(G, communities, output_file):
     nx.write_gexf(G, output_file)
     print(f"Graph exported to {output_file} for Gephi visualization.")
 
-def calculate_distance_quality(G, partition):
+
+
+def calculate_distance_quality(G, partition, num_random_graphs=1):
     """
     Calculate the Distance Quality Function (Q_d) for a given graph and partition.
 
     Parameters:
-    - G (networkx.Graph): The input graph.
-    - partition (list of sets): A partition of the nodes into clusters. 
-      Each cluster is a set of nodes.
+    - G (networkx.Graph): The observed graph.
+    - partition (list of sets): A partition of the nodes into clusters.
+    - num_random_graphs (int): Number of random graphs to generate for expected distance calculation.
 
     Returns:
     - float: The distance quality score (Q_d).
     """
-    def compute_average_distance(cluster, G):
-        """
-        Compute the average pairwise distance within a cluster.
-        """
-        subgraph = G.subgraph(cluster)
-        distances = []
-        for u, v in nx.all_pairs_shortest_path_length(subgraph):
-            distances.extend(v.values())  # Collect all distances
-        num_pairs = len(cluster) * (len(cluster) - 1)  # Total node pairs
-        return np.sum(distances) / num_pairs if num_pairs > 0 else 0
 
-    def compute_random_expected_distance(cluster, G):
+    def compute_observed_distance(cluster, G):
         """
-        Estimate the expected average distance for a random graph with the same node count.
+        Compute the observed total pairwise distances within a cluster.
         """
-        n = len(cluster)
-        if n <= 1:
-            return 0  # Single node or empty cluster
-        random_graph = nx.gnm_random_graph(n, len(G.edges()))
-        while not nx.is_connected(random_graph):
-            random_graph = nx.gnm_random_graph(n, len(G.edges()))
-        try:
-            distances = [nx.shortest_path_length(random_graph, source=u, target=v)
-                         for u in random_graph for v in random_graph if u != v]
-            return np.mean(distances)
-        except nx.NetworkXError:
-            return np.inf  # Disconnected random graph
+        nodes = list(cluster)
+        total_distance = 0
+        # Check if the random graph is connected
+        if not nx.is_connected(G):
+            # Use the diameter of the largest connected component
+            largest_cc = max(nx.connected_components(G), key=len)
+            subgraph = G.subgraph(largest_cc)
+            graph_diameter = nx.diameter(subgraph)
+        else:
+            # Use the diameter of the entire graph
+            graph_diameter = nx.diameter(G)
+
+            graph_diameter = nx.diameter(G)  # Diameter of the random graph
+
+        for i in range(len(nodes)):
+            for j in range(len(nodes)):
+                
+                try:
+                    path_length = nx.shortest_path_length(G, source=nodes[i], target=nodes[j])
+                except nx.NetworkXNoPath:
+                    path_length = 2 * graph_diameter  # Finite penalty for disconnected pairs
+                total_distance += path_length
+                
+
+        return total_distance / 2    # Divide by 2 for symmetry
+
+    def compute_expected_distance(cluster, G, num_random_graphs):
+        """
+        Estimate the expected total pairwise distance for a random graph
+        with the same degree distribution as G.
+        """
+        nodes = list(cluster)
+        n = len(nodes)
+        total_distance = 0
+        count = 0
+        
+        for _ in range(num_random_graphs):
+            # Generate a random graph with the same degree distribution
+            random_graph = nx.expected_degree_graph([d for _, d in G.degree()], selfloops=False)
+            # print(nx.is_connected(random_graph))
+            # print(len(random_graph.edges()))
+            # Skip disconnected random graphs
+            # if not nx.is_connected(random_graph):
+            #     continue
+            # visualize_graph(random_graph)
+
+            # Check if the random graph is connected
+            if not nx.is_connected(random_graph):
+                # Use the diameter of the largest connected component
+                largest_cc = max(nx.connected_components(random_graph), key=len)
+                subgraph = random_graph.subgraph(largest_cc)
+                random_diameter = nx.diameter(subgraph)
+            else:
+                # Use the diameter of the entire graph
+                random_diameter = nx.diameter(random_graph)
+
+            for i in range(len(nodes)):
+                for j in range(len(nodes)):
+                    try:
+                        path_length = nx.shortest_path_length(random_graph, source=nodes[i], target=nodes[j])
+                    except nx.NetworkXNoPath:
+                        path_length = 2 * random_diameter  # Finite penalty for disconnected pairs
+                    total_distance += path_length
+
+        return total_distance / 2   # Divide by 2 for symmetry
 
     # Calculate Q_d
     Q_d = 0
-    for cluster in partition:
-        observed_avg_distance = compute_average_distance(cluster, G)
-        expected_avg_distance = compute_random_expected_distance(cluster, G)
-        # print(f"Observed Avg: {observed_avg_distance}, Expected Avg: {expected_avg_distance}")
-        Q_d += (observed_avg_distance - expected_avg_distance)
-
-    return Q_d
-
-
-def compute_observed_distance(cluster, G):
-    """
-    Compute the observed average pairwise distance within a cluster.
-    Penalize disconnected pairs with a specified penalty.
-    """
-    if len(cluster) <= 1:
-        return 0  # Single node or empty cluster
-
-    # Subgraph for the cluster
-    subgraph = G.subgraph(cluster)
-    distances = []
-    
-    try:
-        graph_diameter = nx.diameter(G)
-    except nx.NetworkXError:
-        graph_diameter = float('inf')  # Infinite for disconnected graphs
-
-    penalty = 3*graph_diameter
-
-    for u in cluster:
-        for v in cluster:
-            if u != v:
-                try:
-                    distances.append(nx.shortest_path_length(subgraph, source=u, target=v))
-                except nx.NetworkXNoPath:
-                    distances.append(penalty)  # Apply penalty for disconnected pairs
-
-    return distances/2 if distances else penalty/2
-
-
-def compute_expected_distance(cluster, G, num_random_graphs=10):
-    """
-    Compute the expected average pairwise distance for the same cluster in a random graph model.
-    Penalize disconnected pairs with a specified penalty.
-    """
-    if len(cluster) <= 1:
-        return 0  # Single node or empty cluster
-
-    try:
-        graph_diameter = nx.diameter(G)
-    except nx.NetworkXError:
-        graph_diameter = float('inf')  # Infinite for disconnected graphs
-
-    penalty = 3*graph_diameter
-
-    total_distance = 0
-    valid_graphs = 0
-
-    for _ in range(num_random_graphs):
-        random_graph = nx.configuration_model([d for _, d in G.degree()])
-        random_graph = nx.Graph(random_graph)  # Convert to a simple graph
-        random_graph.remove_edges_from(nx.selfloop_edges(random_graph))  # Remove self-loops
-
-        # Subgraph for the cluster in the random graph
-        subgraph = random_graph.subgraph(cluster)
-
-        distances = []
-        for u in cluster:
-            for v in cluster:
-                if u != v:
-                    try:
-                        distances.append(nx.shortest_path_length(subgraph, source=u, target=v))
-                    except nx.NetworkXNoPath:
-                        distances.append(penalty)  # Apply penalty for disconnected pairs
-
-        if distances:
-            total_distance += np.mean(distances)
-            valid_graphs += 1
-
-    return total_distance / valid_graphs if valid_graphs > 0 else penalty
-
-
-def compute_inter_cluster_distance(partition, G):
-    """
-    Compute the average inter-cluster distance for all pairs of clusters.
-    """
-    inter_cluster_distances = []
-    for i, cluster1 in enumerate(partition):
-        for j, cluster2 in enumerate(partition):
-            if i < j:  # Avoid double-counting pairs
-                for u in cluster1:
-                    for v in cluster2:
-                        try:
-                            inter_cluster_distances.append(nx.shortest_path_length(G, source=u, target=v))
-                        except nx.NetworkXNoPath:
-                            inter_cluster_distances.append(penalty)  # Apply penalty for disconnected pairs
-
-    return np.mean(inter_cluster_distances) if inter_cluster_distances else penalty
-
-
-def calculate_distance_quality(G, partition, num_random_graphs=10):
-    """
-    Calculate the Distance Quality Function (Q_d) for a given graph and partition.
-    - Includes penalties for disconnected clusters.
-    - Does not penalize based on the number of clusters.
-    - Normalizes by graph size for scale invariance.
-    """
-
-
-    Q_d_intra = 0
+    observed_distance = 0
+    expected_distance = 0
     for cluster in partition:
         observed_distance = compute_observed_distance(cluster, G)
         expected_distance = compute_expected_distance(cluster, G, num_random_graphs)
-        Q_d_intra += (expected_distance - observed_distance)
+        Q_d += expected_distance - observed_distance
 
-    # Complementarity: Add inter-cluster distances to the evaluation
-    # inter_cluster_distance = compute_inter_cluster_distance(partition, G)
-    # Q_d = Q_d_intra - inter_cluster_distance
-    Q_d = Q_d_intra
-    # Normalize by the graph size (scale invariance)
-    total_node_pairs = G.number_of_nodes() * (G.number_of_nodes() - 1)
-    Q_d /= total_node_pairs
+    # Normalize Q_d by the total number of nodes for scale invariance
+    Q_d /= len(G.nodes())
+    return Q_d, observed_distance, expected_distance, len(G.nodes())
 
-    return Q_d
 
 def maximize_distance_quality(
     G, initial_partition, calculate_distance_quality, max_iterations=100, max_no_improvement=10
@@ -303,7 +237,7 @@ def random_partition(G, num_clusters):
         partition[i % num_clusters].add(node)
     return partition
 
-def visualize_graph(G, partition, iteration):
+def visualize_graph(G, partition, iteration=1):
     """
     Visualize the graph with nodes colored by their cluster.
     """
@@ -325,24 +259,116 @@ def visualize_graph(G, partition, iteration):
     plt.title(f"Graph Clustering at Iteration {iteration}")
     plt.show()
 
+def generate_graph(graph_type, num_nodes):
+    """
+    Generate a graph of the specified type.
+
+    Parameters:
+    - graph_type (str): The type of graph to generate ('connected', 'star', 'cycle', 'grid', etc.).
+    - num_nodes (int): The number of nodes in the graph.
+
+    Returns:
+    - networkx.Graph: The generated graph.
+    """
+    if graph_type == 'connected':
+        # Generate a complete graph first, then create a random spanning tree
+        complete_graph = nx.complete_graph(num_nodes)
+        spanning_tree = nx.random_spanning_tree(complete_graph)
+        return nx.Graph(spanning_tree)
+    elif graph_type == 'star':
+        return nx.star_graph(num_nodes - 1)  # Generates a star graph
+    elif graph_type == 'cycle':
+        return nx.cycle_graph(num_nodes)  # Generates a cycle graph
+    elif graph_type == 'complete':
+        return nx.complete_graph(num_nodes)  # Generates a fully connected graph
+    elif graph_type == 'grid':
+        side_length = int(num_nodes**0.5)
+        return nx.grid_2d_graph(side_length, side_length)  # Generates a 2D grid
+    else:
+        raise ValueError(f"Unknown graph type: {graph_type}")
+
+def generate_random_partition(graph, num_clusters):
+    """
+    Generate a random partition of the nodes in the graph.
+
+    Parameters:
+    - graph (networkx.Graph): The graph whose nodes will be partitioned.
+    - num_clusters (int): The number of clusters.
+
+    Returns:
+    - list of sets: A random partition of the graph's nodes into clusters.
+    """
+    nodes = list(graph.nodes())
+    random.shuffle(nodes)  # Shuffle the nodes randomly
+    partition = []
+    cluster_size = len(nodes) // num_clusters
+    for i in range(num_clusters - 1):
+        partition.append(set(nodes[i * cluster_size:(i + 1) * cluster_size]))
+    partition.append(set(nodes[(num_clusters - 1) * cluster_size:]))  # Remaining nodes in the last cluster
+    return partition
+
+def display_partition(partition):
+    """
+    Print the generated partition.
+
+    Parameters:
+    - partition (list of sets): The partition of nodes to display.
+    """
+    print("Generated Partition:")
+    for i, cluster in enumerate(partition):
+        print(f"Cluster {i + 1}: {sorted(cluster)}")
+
+def visualize_graph(G, partition=None):
+    """
+    Visualize the graph and optionally color nodes by partition.
+
+    Parameters:
+    - G (networkx.Graph): The graph to visualize.
+    - partition (list of sets, optional): Partition of nodes to color clusters.
+    """
+    pos = nx.spring_layout(G)
+    if partition:
+        colors = []
+        for node in G.nodes():
+            for i, cluster in enumerate(partition):
+                if node in cluster:
+                    colors.append(i)
+                    break
+        nx.draw(G, pos, with_labels=True, node_color=colors, cmap=plt.cm.tab20)
+    else:
+        nx.draw(G, pos, with_labels=True)
+    plt.show()
+
 # Main Script
 if __name__ == "__main__":
 
-    G = nx.karate_club_graph()
-    n=5
+    
 
-    G = nx.complete_graph(n)
-    partition = [set(G.nodes())] 
-    score = calculate_distance_quality(G, partition)
-    print(f"Score for connected graph: {score}")
+    # Parameters for graph generation
+    num_nodes = 200  # Number of nodes in the graph
+    num_clusters = 10  # Number of random clusters
+    graph_types = [ 'star', 'cycle', 'complete']
 
-    G = nx.star_graph(n - 1)  # One central node (0), n-1 peripheral nodes
-    partition = [set(G.nodes())]  # One cluster with all nodes
-    score = calculate_distance_quality(G, partition)
-    print(f"Score for star graph: {score}")
+    # Generate and partition graphs
+    for graph_type in graph_types:
+        print(f"\nGenerating a {graph_type} graph with {num_nodes} nodes...")
+        G = generate_graph(graph_type, num_nodes)
+        
+        # Random partition
+        partition = generate_random_partition(G, num_clusters)
+        
+        # Display graph and partition
+        print(f"Graph type: {graph_type}")
+        display_partition(partition)
 
-    # Initial partition, Single Cluster
-    initial_partition = [set(G.nodes())]
+
+        dq, observed_distance, expected_distance, n = calculate_distance_quality(G, partition, 1)
+        print(f"Distance quality: {dq}, observed_distance: {observed_distance}, expected_distance: {expected_distance}, number of nodes: {n}")
+        
+        # Visualize the graph
+        # visualize_graph(G, partition)
+
+    G = load_snap_email_network()
 
     # Initial partition, Random Clusters
     # initial_partition = random_partition(G, 3)  # Randomly split into 3 clusters
@@ -350,6 +376,9 @@ if __name__ == "__main__":
     # Initial partition, Modularity partition
     # modularity_clusters = greedy_modularity_communities(G)
     # initial_partition = [set(cluster) for cluster in modularity_clusters]
+
+    # dq = calculate_distance_quality(G, initial_partition, 1)
+    # print(f"Distance quality: {dq}")
 
     # Perform the search
     # best_partition, max_qd, qd_values = maximize_distance_quality(
