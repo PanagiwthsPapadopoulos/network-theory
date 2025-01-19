@@ -1,6 +1,7 @@
 import itertools
 import random
 import time
+from joblib import Parallel, delayed
 from matplotlib import pyplot as plt
 import networkx as nx
 from networkx.algorithms.community import greedy_modularity_communities
@@ -36,17 +37,24 @@ def generate_true_random_connected_graph(num_nodes, edge_probability=0.1):
         if nx.is_connected(G):
             return G  # Return the graph if it's connected
 
-# Step 1: Load the Network
 def load_snap_email_network():
     """
     Loads the email-Eu-core network dataset from the downloaded text file.
     """
-    local_file = "email-Eu-core.txt"  # Ensure the filename matches exactly
+    local_file = "email-Eu-core.txt"  
     print("Loading graph from local file...")
     G = nx.read_edgelist(local_file, nodetype=int, create_using=nx.Graph())
     return G
 
-# Step 2: Perform Modularity-Based Clustering
+def load_twitter_graph():
+    """
+    Loads the Twitter Interaction Network for the US Congress from the downloaded file.
+    """
+    local_file = "congress.edgelist"  
+    print("Loading graph from local file...")
+    G = nx.read_edgelist(local_file, nodetype=int, create_using=nx.Graph())
+    return G
+
 def modularity_clustering(G):
     """
     Finds clusters (communities) in the graph using greedy modularity optimization.
@@ -62,7 +70,6 @@ def modularity_clustering(G):
     
     return communities, mod_score
 
-# Step 3: Save Clusters for Gephi Visualization
 def export_to_gephi(G, communities, output_file):
     """
     Exports the graph and community data to a .gexf file for Gephi visualization.
@@ -91,11 +98,6 @@ def calculate_distance_quality(G, partition, num_random_graphs=1):
     - float: The distance quality score (Q_d).
     """
 
-    # Precompute shortest paths for the observed graph
-    # shortest_paths = dict(nx.all_pairs_shortest_path_length(G))
-
-    # visualize_graph(G, partition)
-
     def compute_observed_distance(cluster, G):
         """
         Compute the observed total pairwise distances within a cluster.
@@ -119,7 +121,6 @@ def calculate_distance_quality(G, partition, num_random_graphs=1):
                 
                 try:
                     path_length = nx.shortest_path_length(G, source=nodes[i], target=nodes[j])
-                    # path_length = shortest_paths[nodes[i]][nodes[j]]
                 except nx.NetworkXNoPath:
                     path_length = 2 * graph_diameter  # Finite penalty for disconnected pairs
                 total_distance += path_length
@@ -142,15 +143,10 @@ def calculate_distance_quality(G, partition, num_random_graphs=1):
             random_graph = nx.expected_degree_graph([d for _, d in G.degree()], selfloops=False)
             mapping = {i: original_label for i, original_label in enumerate(G.nodes())}
             random_graph = nx.relabel_nodes(random_graph, mapping)
-            # print(f"List of nodes: {list(G.nodes())}")
-            # print(f"List of random nodes: {list(random_graph.nodes())}")
             missing_nodes = [node for node in nodes if node not in random_graph]
             if missing_nodes:
                 print(f"Missing nodes from random graph: {missing_nodes}")
-            
-            # Precompute shortest paths for the random graph
-            random_shortest_paths = dict(nx.all_pairs_shortest_path_length(random_graph))
-            
+                        
             # Check if the random graph is connected
             if not nx.is_connected(random_graph):
                 # Use the diameter of the largest connected component
@@ -160,13 +156,10 @@ def calculate_distance_quality(G, partition, num_random_graphs=1):
             else:
                 # Use the diameter of the entire graph
                 random_diameter = nx.diameter(random_graph)
-            # print(f'From compute_expected_distance: Nodes: {nodes}')
             for i in range(len(nodes)):
                 for j in range(len(nodes)):
                     try:
-                        # print(f'Trying from source node {nodes[i]} to target node {nodes[j]}')
                         path_length = nx.shortest_path_length(random_graph, source=nodes[i], target=nodes[j])
-                        # path_length = random_shortest_paths[nodes[i]][nodes[j]]
                     except nx.NetworkXNoPath:
                         path_length = 2 * random_diameter  # Finite penalty for disconnected pairs
                     total_distance += path_length
@@ -232,7 +225,6 @@ def visualize_graph(G, partition, title = ''):
     # Assign colors to nodes
     node_colors = [cluster_colors[node] for node in G.nodes()]
 
-    # partition.pop(unassigned_nodes)
     # Plot the graph
     plt.figure()
     pos = nx.spring_layout(G)  # Spring layout for better visualization
@@ -244,34 +236,6 @@ def visualize_graph(G, partition, title = ''):
     plt.subplots_adjust(top=0.85)  # Make space at the top for the title
     plt.legend()
     plt.show()
-
-def generate_graph(graph_type, num_nodes):
-    """
-    Generate a graph of the specified type.
-
-    Parameters:
-    - graph_type (str): The type of graph to generate ('connected', 'star', 'cycle', 'grid', etc.).
-    - num_nodes (int): The number of nodes in the graph.
-
-    Returns:
-    - networkx.Graph: The generated graph.
-    """
-    if graph_type == 'connected':
-        # Generate a complete graph first, then create a random spanning tree
-        complete_graph = nx.complete_graph(num_nodes)
-        spanning_tree = nx.random_spanning_tree(complete_graph)
-        return nx.Graph(spanning_tree)
-    elif graph_type == 'star':
-        return nx.star_graph(num_nodes - 1)  # Generates a star graph
-    elif graph_type == 'cycle':
-        return nx.cycle_graph(num_nodes)  # Generates a cycle graph
-    elif graph_type == 'complete':
-        return nx.complete_graph(num_nodes)  # Generates a fully connected graph
-    elif graph_type == 'grid':
-        side_length = int(num_nodes**0.5)
-        return nx.grid_2d_graph(side_length, side_length)  # Generates a 2D grid
-    else:
-        raise ValueError(f"Unknown graph type: {graph_type}")
 
 def generate_random_partition(graph, num_clusters):
     """
@@ -304,39 +268,6 @@ def display_partition(partition):
     for i, cluster in enumerate(partition):
         print(f"Cluster {i + 1}: {sorted(cluster)}")
 
-def generate_connected_graph(num_nodes, density=0.5):
-    """
-    Generates a random connected graph with the specified density.
-
-    Parameters:
-    - num_nodes (int): Number of nodes in the graph.
-    - density (float): Desired density of the graph (0 < density ≤ 1).
-
-    Returns:
-    - networkx.Graph: A connected random graph.
-    """
-    if density <= 0 or density > 1:
-        raise ValueError("Density must be between 0 and 1.")
-    if num_nodes < 2:
-        raise ValueError("Number of nodes must be at least 2.")
-
-    # Step 1: Generate a random graph
-    p = density  # Probability of edge creation
-    G = nx.gnp_random_graph(num_nodes, p)
-
-    # Step 2: Ensure the graph is connected
-    while not nx.is_connected(G):
-        # Find all connected components
-        components = list(nx.connected_components(G))
-
-        # Randomly choose two components and connect them
-        c1, c2 = random.sample(components, 2)
-        u = random.choice(list(c1))
-        v = random.choice(list(c2))
-        G.add_edge(u, v)
-
-    return G
-
 def group_high_degree_nodes(G, mean_degree):
     """
     Group nodes with high degrees into proto-clusters based on connectivity.
@@ -344,7 +275,6 @@ def group_high_degree_nodes(G, mean_degree):
     high_degree_nodes = [node for node, degree in G.degree() if degree >= mean_degree]
     return [{node} for node in high_degree_nodes]
 
-#
 def proto_clusters_betweenness(G, threshold=0.05):
     """
     Form proto-clusters based on high betweenness centrality.
@@ -427,7 +357,7 @@ def proto_clusters_clustering_coeff(G, threshold=0.05):
         proto_centers = [random.choice(list(G.nodes))]
     
     return [{center} for center in proto_centers]
-#
+
 def spectral_clustering(G, num_clusters):
     """
     Perform spectral clustering on a graph.
@@ -525,10 +455,6 @@ def expand_clusters(G, proto_clusters):
     while True:
         # Create a set of all nodes currently assigned to clusters
         assigned_nodes = set().union(*clusters)
-        # print('Clusters:')
-        # print(clusters)
-        # Visualize graph
-        # visualize_graph(G, clusters, f'Proto Clusters with mean degree of ')
 
         # Identify unassigned nodes
         unassigned_nodes = set(G.nodes()) - assigned_nodes
@@ -564,9 +490,7 @@ def expand_clusters(G, proto_clusters):
         centrality = nx.betweenness_centrality(G)
         sorted_nodes = sorted(G.nodes, key=lambda node: centrality[node], reverse=True)
 
-        # print(node_to_candidates.keys())
         
-        # sorted_nodes = [node for node in sorted_nodes if node not in node_to_candidates.keys()]
 
 
         # Iterate over each unassigned node
@@ -580,8 +504,6 @@ def expand_clusters(G, proto_clusters):
                 # Test adding the node to each candidate cluster
                 for candidate_cluster in candidate_clusters:
                     candidate_cluster = set(candidate_cluster)  # Convert frozenset to set for manipulation
-                    # current_distance = compute_cluster_distance(candidate_cluster, G)
-                    # print(candidate_cluster | {node})
                     new_distance, _ = calculate_distance_quality_ercq(G, [candidate_cluster | {node}])
 
                     # Find the cluster with the minimal distance
@@ -599,16 +521,87 @@ def expand_clusters(G, proto_clusters):
         new_clusters = []
         # Output the transformed clusters
         for cluster, nodes in changes.items():
-            # print(f'Cluster {cluster} with nodes {nodes}')
             temp_set = set()
             for item in cluster:
                 temp_set.add(item)
             temp_set.update(nodes)
             new_clusters.append(temp_set)
-        # new_clusters.pop()
         clusters = new_clusters
         
         
+
+    return clusters
+
+def expand_clusters_in_parallel(G, proto_clusters):
+    """
+    Expand proto-clusters outward by adding nodes iteratively.
+    """
+    unassigned_nodes = set(G.nodes()) - set(node for cluster in proto_clusters for node in cluster)
+    clusters = proto_clusters
+    while True:
+        # Create a set of all nodes currently assigned to clusters
+        assigned_nodes = set().union(*clusters)
+        unassigned_nodes = set(G.nodes()) - assigned_nodes
+        changes = {}
+        for cluster in clusters:
+            changes[frozenset(cluster)] = []
+
+        # Check if the set is empty
+        if not unassigned_nodes: 
+            break
+
+        # Map unassigned nodes to their candidate clusters
+        node_to_candidates = {}
+
+        # Parallelized: Find candidate clusters for each unassigned node
+        def find_candidates(node, clusters, G):
+            neighbors = set(G.neighbors(node))
+            candidate_clusters = {frozenset(cluster) for cluster in clusters if neighbors & cluster}
+            return node, candidate_clusters
+
+        node_to_candidates = dict(Parallel(n_jobs=-1)(delayed(find_candidates)(node, clusters, G) for node in unassigned_nodes))
+
+        # Filter out nodes with no candidate clusters
+        node_to_candidates = {node: candidates for node, candidates in node_to_candidates.items() if candidates}
+
+        for key, value in list(node_to_candidates.items()):
+            if not value: node_to_candidates.pop(key)
+       
+        # Calculate betweenness centrality
+        centrality = nx.betweenness_centrality(G)
+        sorted_nodes = sorted(node_to_candidates.keys(), key=lambda node: centrality[node], reverse=True)
+
+
+        # Parallelized: Evaluate clusters for each node
+        def evaluate_cluster(node, candidate_cluster, G):
+            new_distance, _ = calculate_distance_quality_ercq(G, [candidate_cluster | {node}])
+            return node, candidate_cluster, new_distance
+
+        results = Parallel(n_jobs=-1)(
+            delayed(evaluate_cluster)(node, candidate_cluster, G)
+            for node in sorted_nodes
+            for candidate_cluster in node_to_candidates[node]
+        )
+
+        # Assign nodes to the best clusters based on evaluation
+        changes = {frozenset(cluster): [] for cluster in clusters}
+        for node, candidate_cluster, new_distance in results:
+            best_cluster = min(
+                (candidate_cluster for candidate_cluster in node_to_candidates[node]),
+                key=lambda cluster: calculate_distance_quality_ercq(G, [cluster | {node}])[0]
+            )
+            changes[frozenset(best_cluster)].append(node)
+
+        # Update clusters with changes
+        def update_cluster(cluster, nodes):
+            updated_cluster = set(cluster)
+            updated_cluster.update(nodes)
+            return updated_cluster
+
+        clusters = Parallel(n_jobs=-1)(
+            delayed(update_cluster)(cluster, changes[frozenset(cluster)])
+            for cluster in clusters
+        )
 
     return clusters
 
@@ -632,15 +625,11 @@ def refine_clusters_with_merging(G, initial_clusters, num_random_graphs=1):
     """
     clusters = initial_clusters
     improved = True
-    # max_qd, _, _, _ = calculate_distance_quality(G, clusters, num_random_graphs)
 
     while improved:
         improved = False
         best_merge = None
-        # best_qd = max_qd
-        # print(f'From refine_clusters_with_merging: Sending clusters: {clusters}')
         current_qd, contributions = calculate_distance_quality_ercq(G, clusters)
-        # current_qd, _, _, contributions = calculate_distance_quality(G, clusters, 1)
         cluster_contributions = list(zip(clusters, contributions))
         sorted_contributions = sorted(cluster_contributions, key=lambda x: x[1])
 
@@ -654,36 +643,75 @@ def refine_clusters_with_merging(G, initial_clusters, num_random_graphs=1):
 
                 # New partition
                 new_partition = [c for c in clusters if c != cluster_i and c != cluster_j] + [merged_cluster]
-                # new_qd, _ , _, _= calculate_distance_quality(G, new_partition, 1)
                 new_qd, _ = calculate_distance_quality_ercq(G, new_partition)
 
                 if new_qd > current_qd:
-                    # print(f"Merging clusters {cluster_i} and {cluster_j} improved Q_d from {current_qd} to {new_qd}")
                     clusters = new_partition
                     current_qd = new_qd
                     improved = True
                     break  # Restart the iteration after a successful merge
 
             if improved:
-                # print('Improvement implemented, starting while loop again...')
                 break
 
+    return clusters
 
-                # merged_clusters = clusters[:i] + clusters[i+1:j] + clusters[j+1:] + [clusters[i] | clusters[j]]
-                # # new_clusters = [c for k, c in enumerate(clusters) if k != i and k != j] + [merged_cluster]
-                # new_qd, _, _, _ = calculate_distance_quality(G, merged_clusters, num_random_graphs)
-                # print(f'Checking clusters {i, j} with {clusters[i]} and {clusters[j]} and distance quality of {new_qd} and best distance quality of {best_qd}')
-                # if new_qd > best_qd:
-                #     best_qd = new_qd
-                #     best_merge = (i, j)
+def refine_clusters_with_merging_parallel(G, initial_clusters, num_random_graphs=1):
+    """
+    Refine clusters by attempting to merge them if it improves Q_d in parallel.
+    """
+    clusters = initial_clusters
+    improved = True
 
-        # # Perform the best merge
-        # if best_merge:
-        #     print(f'Better merge with {best_merge} with qd {new_qd}')
-        #     i, j = best_merge
-        #     merged_cluster = clusters[i].union(clusters[j])
-        #     clusters = [c for k, c in enumerate(clusters) if k != i and k != j] + [merged_cluster]
-        #     improved = True
+    def evaluate_merge(clusters, i, j, G):
+        """
+        Evaluate the distance quality after merging clusters i and j.
+        """
+        # Create a new partition by merging clusters[i] and clusters[j]
+        merged_clusters = clusters[:i] + clusters[i+1:j] + clusters[j+1:] + [clusters[i] | clusters[j]]
+        
+        # Calculate the new distance quality for the merged clusters
+        new_qd, _,  = calculate_distance_quality_ercq(G, merged_clusters)
+        
+        return (i, j, new_qd)
+    
+    def find_best_merge(clusters, G, current_qd):
+        """
+        Find the best pair of clusters to merge in parallel.
+        """
+        results = Parallel(n_jobs=-1)(  # Use all available CPU cores
+            delayed(evaluate_merge)(clusters, i, j, G)
+            for i in range(len(clusters)) for j in range(i + 1, len(clusters))
+        )
+        
+        # Filter only the merges that improve Q_d
+        valid_results = [res for res in results if res[2] > current_qd]
+        
+        # If no valid merges, return None
+        if not valid_results:
+            return None
+        
+        # Return the best merge (highest Q_d)
+        return max(valid_results, key=lambda x: x[2])
+
+    while improved:
+        current_qd, _ = calculate_distance_quality_ercq(G, clusters)
+        best_merge = find_best_merge(clusters, G, current_qd)
+        
+        if not best_merge:
+            break  # No more valid merges
+
+        i, j, new_qd = best_merge
+        
+        # Perform the merge
+        merged_cluster = clusters[i] | clusters[j]
+        clusters = [clusters[k] for k in range(len(clusters)) if k != i and k != j] + [merged_cluster]
+        
+        # Update current Q_d
+        current_qd = new_qd
+
+
+        
 
     return clusters
 
@@ -695,28 +723,25 @@ def maximize_distance_quality(G, mode='proto_clusters_betweenness', parameter=0.
     global_clusters = []
     
     for i, component in enumerate(components):
-        # print(f"Processing connected component {i + 1} with {len(component.nodes())} nodes...")
-
-        # Step 2: Perform initial clustering
+        # Perform initial clustering
         mean_degree = sum(dict(component.degree()).values()) / len(component.nodes())
         
         if mode == 'proto_clusters_betweenness':
-            proto_clusters = proto_clusters_betweenness(G, parameter)
+            proto_clusters = proto_clusters_betweenness(component, parameter)
         if mode == 'proto_clusters_closeness':
-            proto_clusters = proto_clusters_closeness(G, parameter)
+            proto_clusters = proto_clusters_closeness(component, parameter)
         if mode == 'proto_clusters_spectral':
-            proto_clusters = proto_clusters_spectral(G, parameter)
+            proto_clusters = proto_clusters_spectral(component, parameter)
         if mode == 'proto_clusters_k_core':
-            proto_clusters = proto_clusters_k_core(G, parameter)
+            proto_clusters = proto_clusters_k_core(component, parameter)
         if mode == 'proto_clusters_clustering_coeff':
-            proto_clusters = proto_clusters_clustering_coeff(G, parameter)
+            proto_clusters = proto_clusters_clustering_coeff(component, parameter)
 
         # Expand clusters
-        initial_clusters = expand_clusters(component, proto_clusters)
+        initial_clusters = expand_clusters_in_parallel(component, proto_clusters)
 
-        # Step 3: Refine clusters with merging
-        final_clusters = refine_clusters_with_merging(component, initial_clusters, 1)
-        # final_clusters = initial_clusters        
+        # Refine clusters with merging
+        final_clusters = refine_clusters_with_merging_parallel(component, initial_clusters, 1)
 
         # Add the final clusters of this component to the global clusters
         global_clusters.extend(final_clusters)
@@ -724,13 +749,11 @@ def maximize_distance_quality(G, mode='proto_clusters_betweenness', parameter=0.
     
     return final_clusters
 
-
 def evaluate_clusters(G, clusters):
     """
     Evaluate modularity and distance quality of given clusters.
     """
     modularity = community.modularity(G, clusters)
-    # print('Calculated modularity')
     dq, observed_distance, expected_distance, _ = calculate_distance_quality(G, clusters, 3)
     return modularity, dq
 
@@ -771,7 +794,6 @@ def compute_observed_distance(cluster, G):
                 
                 try:
                     path_length = nx.shortest_path_length(G, source=nodes[i], target=nodes[j])
-                    # path_length = shortest_paths[nodes[i]][nodes[j]]
                 except nx.NetworkXNoPath:
                     path_length = 2 * graph_diameter  # Finite penalty for disconnected pairs
                 total_distance += path_length
@@ -801,58 +823,31 @@ def calculate_distance_quality_ercq(G, partition):
 # Main Script
 if __name__ == "__main__":
 
-    # --------------------------------------------------  Baseline Graphs Evaluation  ------------------------------------------------------------ #
-
-    # # Parameters for graph generation
-    # num_nodes = 200  # Number of nodes in the graph
-    # num_clusters = 10  # Number of random clusters
-    # graph_types = [ 'star', 'cycle', 'complete']
-
-    # # Generate and partition graphs
-    # for graph_type in graph_types:
-    #     print(f"\nGenerating a {graph_type} graph with {num_nodes} nodes...")
-    #     G = generate_graph(graph_type, num_nodes)
-        
-    #     # Random partition
-    #     partition = generate_random_partition(G, num_clusters)
-        
-    #     # Display graph and partition
-    #     print(f"Graph type: {graph_type}")
-    #     display_partition(partition)
-
-
-    #     dq, observed_distance, expected_distance, n = calculate_distance_quality(G, partition, 1)
-    #     print(f"Distance quality: {dq}, observed_distance: {observed_distance}, expected_distance: {expected_distance}, number of nodes: {n}")
-        
-        # Visualize the graph
-        # visualize_graph(G, partition)
-
-
     # ---------------------------------------- Maximize Distance Quality ---------------------------------------- #
 
-    # NUMBER_OF_NODES = 130
-    # PROBABILITY = 0.8
+    NUMBER_OF_NODES = 100
+    PROBABILITY = 0.15
     
-    # G = generate_true_random_connected_graph(NUMBER_OF_NODES, PROBABILITY)
+    G = generate_true_random_connected_graph(NUMBER_OF_NODES, PROBABILITY)
     # # G = load_snap_email_network()
     # print(f"Graph loaded with {G.number_of_nodes()} nodes and {G.number_of_edges()} edges.\n")
 
 
-    # # Step 1: Split graph using modularity
+    # # Split graph using modularity
     # modularity_clusters = list(community.greedy_modularity_communities(G))
     # modularity_score, dq_modularity = evaluate_clusters(G, modularity_clusters)
     # print(f"Modularity-based clusters: Modularity = {modularity_score}, Distance Quality = {dq_modularity}\n")
 
-    # # Step 2: Split graph using distance quality maximization
+    # # Split graph using distance quality maximization
     # dq_clusters = maximize_distance_quality(G)
     # modularity_score_dq, dq_dq = evaluate_clusters(G, dq_clusters)
     # print(f"Distance-quality-based clusters: Modularity = {modularity_score_dq}, Distance Quality = {dq_dq}\n")
 
 
 
-    # ---------------------------------------- Given Graph Clustering using different Methods ---------------------------------------- #
+    # ---------------------------------------- Graph Clustering using different Methods ---------------------------------------- #
 
-    G = load_snap_email_network()
+    # G = load_twitter_graph()
     print(f"Graph loaded with {G.number_of_nodes()} nodes and {G.number_of_edges()} edges.\n")
 
     # Modularity based Clustering
@@ -865,86 +860,86 @@ if __name__ == "__main__":
 
 
     # Distance Quality based Clustering with proto-clusters betweeness 0.05
-    start_time = time.time()
-    dq_clusters = maximize_distance_quality(G, 'proto_clusters_betweenness', 0.05)
-    modularity_score, dq_modularity = evaluate_clusters(G, dq_clusters)
-    end_time = time.time()
-    export_to_gephi(G, dq_clusters, 'dq_clusters_betweenness_0.05.gexf')
-    print(f"Distance Quality based Clustering with proto-clusters betweeness 0.05: Modularity = {modularity_score}, Distance Quality = {dq_modularity}, Duration: {end_time-start_time}\n")
+    # start_time = time.time()
+    # dq_clusters = maximize_distance_quality(G, 'proto_clusters_betweenness', 0.01)
+    # modularity_score, dq_modularity = evaluate_clusters(G, dq_clusters)
+    # end_time = time.time()
+    # export_to_gephi(G, dq_clusters, 'dq_clusters_betweenness_0.01.gexf')
+    # print(f"Distance Quality based Clustering with proto-clusters betweeness 0.01: Modularity = {modularity_score}, Distance Quality = {dq_modularity}, Duration: {end_time-start_time}\n")
 
 
     # Distance Quality based Clustering with proto-clusters betweeness 0.1
-    start_time = time.time()
-    dq_clusters = maximize_distance_quality(G, 'proto_clusters_betweenness', 0.1)
-    modularity_score, dq_modularity = evaluate_clusters(G, dq_clusters)
-    end_time = time.time()
-    export_to_gephi(G, dq_clusters, 'dq_clusters_betweenness_0.1.gexf')
-    print(f"Distance Quality based Clustering with proto-clusters betweeness 0.1: Modularity = {modularity_score}, Distance Quality = {dq_modularity}, Duration: {end_time-start_time}\n")
+    # start_time = time.time()
+    # dq_clusters = maximize_distance_quality(G, 'proto_clusters_betweenness', 0.03)
+    # modularity_score, dq_modularity = evaluate_clusters(G, dq_clusters)
+    # end_time = time.time()
+    # export_to_gephi(G, dq_clusters, 'dq_clusters_betweenness_0.03.gexf')
+    # print(f"Distance Quality based Clustering with proto-clusters betweeness 0.03: Modularity = {modularity_score}, Distance Quality = {dq_modularity}, Duration: {end_time-start_time}\n")
 
 
     # Distance Quality based Clustering with proto-clusters closeness 0.05
-    start_time = time.time()
-    dq_clusters = maximize_distance_quality(G, 'proto_clusters_closeness', 0.05)
-    modularity_score, dq_modularity = evaluate_clusters(G, dq_clusters)
-    end_time = time.time()
-    export_to_gephi(G, dq_clusters, 'proto_clusters_closeness_0.05.gexf')
-    print(f"Distance Quality based Clustering with proto-clusters closeness 0.05: Modularity = {modularity_score}, Distance Quality = {dq_modularity}, Duration: {end_time-start_time}\n")
+    # start_time = time.time()
+    # dq_clusters = maximize_distance_quality(G, 'proto_clusters_closeness', 0.01)
+    # modularity_score, dq_modularity = evaluate_clusters(G, dq_clusters)
+    # end_time = time.time()
+    # export_to_gephi(G, dq_clusters, 'proto_clusters_closeness_0.01.gexf')
+    # print(f"Distance Quality based Clustering with proto-clusters closeness 0.01: Modularity = {modularity_score}, Distance Quality = {dq_modularity}, Duration: {end_time-start_time}\n")
 
     # Distance Quality based Clustering with proto-clusters closeness 0.1
-    start_time = time.time()
-    dq_clusters = maximize_distance_quality(G, 'proto_clusters_closeness', 0.1)
-    modularity_score, dq_modularity = evaluate_clusters(G, dq_clusters)
-    end_time = time.time()
-    export_to_gephi(G, dq_clusters, 'proto_clusters_closeness_0.1.gexf')
-    print(f"Distance Quality based Clustering with proto-clusters closeness 0.1: Modularity = {modularity_score}, Distance Quality = {dq_modularity}, Duration: {end_time-start_time}\n")
+    # start_time = time.time()
+    # dq_clusters = maximize_distance_quality(G, 'proto_clusters_closeness', 0.03)
+    # modularity_score, dq_modularity = evaluate_clusters(G, dq_clusters)
+    # end_time = time.time()
+    # export_to_gephi(G, dq_clusters, 'proto_clusters_closeness_0.03.gexf')
+    # print(f"Distance Quality based Clustering with proto-clusters closeness 0.03: Modularity = {modularity_score}, Distance Quality = {dq_modularity}, Duration: {end_time-start_time}\n")
 
-    # Distance Quality based Clustering with proto-clusters spectral 5
-    start_time = time.time()
-    dq_clusters = maximize_distance_quality(G, 'proto_clusters_spectral', 5)
-    modularity_score, dq_modularity = evaluate_clusters(G, dq_clusters)
-    end_time = time.time()
-    export_to_gephi(G, dq_clusters, 'proto_clusters_spectral_5.gexf')
-    print(f"Distance Quality based Clustering with proto-clusters spectral 5 eigenvectors: Modularity = {modularity_score}, Distance Quality = {dq_modularity}, Duration: {end_time-start_time}\n")
+    # # Distance Quality based Clustering with proto-clusters spectral 5
+    # start_time = time.time()
+    # dq_clusters = maximize_distance_quality(G, 'proto_clusters_spectral', 5)
+    # modularity_score, dq_modularity = evaluate_clusters(G, dq_clusters)
+    # end_time = time.time()
+    # export_to_gephi(G, dq_clusters, 'proto_clusters_spectral_5.gexf')
+    # print(f"Distance Quality based Clustering with proto-clusters spectral 5 eigenvectors: Modularity = {modularity_score}, Distance Quality = {dq_modularity}, Duration: {end_time-start_time}\n")
 
-    # Distance Quality based Clustering with proto-clusters spectral 10
-    start_time = time.time()
-    dq_clusters = maximize_distance_quality(G, 'proto_clusters_spectral', 10)
-    modularity_score, dq_modularity = evaluate_clusters(G, dq_clusters)
-    end_time = time.time()
-    export_to_gephi(G, dq_clusters, 'proto_clusters_spectral_10.gexf')
-    print(f"Distance Quality based Clustering with proto-clusters spectral 10 eigenvectors: Modularity = {modularity_score}, Distance Quality = {dq_modularity}, Duration: {end_time-start_time}\n")
+    # # Distance Quality based Clustering with proto-clusters spectral 10
+    # start_time = time.time()
+    # dq_clusters = maximize_distance_quality(G, 'proto_clusters_spectral', 10)
+    # modularity_score, dq_modularity = evaluate_clusters(G, dq_clusters)
+    # end_time = time.time()
+    # export_to_gephi(G, dq_clusters, 'proto_clusters_spectral_10.gexf')
+    # print(f"Distance Quality based Clustering with proto-clusters spectral 10 eigenvectors: Modularity = {modularity_score}, Distance Quality = {dq_modularity}, Duration: {end_time-start_time}\n")
 
-    # Distance Quality based Clustering with proto-clusters spectral 15
-    start_time = time.time()
-    dq_clusters = maximize_distance_quality(G, 'proto_clusters_spectral', 15)
-    modularity_score, dq_modularity = evaluate_clusters(G, dq_clusters)
-    end_time = time.time()
-    export_to_gephi(G, dq_clusters, 'proto_clusters_spectral_15.gexf')
-    print(f"Distance Quality based Clustering with proto-clusters spectral 15 eigenvectors: Modularity = {modularity_score}, Distance Quality = {dq_modularity}, Duration: {end_time-start_time}\n")
+    # # Distance Quality based Clustering with proto-clusters spectral 15
+    # start_time = time.time()
+    # dq_clusters = maximize_distance_quality(G, 'proto_clusters_spectral', 15)
+    # modularity_score, dq_modularity = evaluate_clusters(G, dq_clusters)
+    # end_time = time.time()
+    # export_to_gephi(G, dq_clusters, 'proto_clusters_spectral_15.gexf')
+    # print(f"Distance Quality based Clustering with proto-clusters spectral 15 eigenvectors: Modularity = {modularity_score}, Distance Quality = {dq_modularity}, Duration: {end_time-start_time}\n")
 
-    # Distance Quality based Clustering with proto-clusters k-core Decomposition 3
-    start_time = time.time()
-    dq_clusters = maximize_distance_quality(G, 'proto_clusters_k_core', 3)
-    modularity_score, dq_modularity = evaluate_clusters(G, dq_clusters)
-    end_time = time.time()
-    export_to_gephi(G, dq_clusters, 'proto_clusters_k_core_3.gexf')
-    print(f"Distance Quality based Clustering with proto-clusters k-core Decomposition 3 nodes: Modularity = {modularity_score}, Distance Quality = {dq_modularity}, Duration: {end_time-start_time}\n")
+    # # Distance Quality based Clustering with proto-clusters k-core Decomposition 3
+    # start_time = time.time()
+    # dq_clusters = maximize_distance_quality(G, 'proto_clusters_k_core', 3)
+    # modularity_score, dq_modularity = evaluate_clusters(G, dq_clusters)
+    # end_time = time.time()
+    # export_to_gephi(G, dq_clusters, 'proto_clusters_k_core_3.gexf')
+    # print(f"Distance Quality based Clustering with proto-clusters k-core Decomposition 3 nodes: Modularity = {modularity_score}, Distance Quality = {dq_modularity}, Duration: {end_time-start_time}\n")
 
-    # Distance Quality based Clustering with proto-clusters k-core Decomposition 6
-    start_time = time.time()
-    dq_clusters = maximize_distance_quality(G, 'proto_clusters_k_core', 6)
-    modularity_score, dq_modularity = evaluate_clusters(G, dq_clusters)
-    end_time = time.time()
-    export_to_gephi(G, dq_clusters, 'proto_clusters_k_core_6.gexf')
-    print(f"Distance Quality based Clustering with proto-clusters k-core Decomposition 6 nodes: Modularity = {modularity_score}, Distance Quality = {dq_modularity}, Duration: {end_time-start_time}\n")
+    # # Distance Quality based Clustering with proto-clusters k-core Decomposition 6
+    # start_time = time.time()
+    # dq_clusters = maximize_distance_quality(G, 'proto_clusters_k_core', 6)
+    # modularity_score, dq_modularity = evaluate_clusters(G, dq_clusters)
+    # end_time = time.time()
+    # export_to_gephi(G, dq_clusters, 'proto_clusters_k_core_6.gexf')
+    # print(f"Distance Quality based Clustering with proto-clusters k-core Decomposition 6 nodes: Modularity = {modularity_score}, Distance Quality = {dq_modularity}, Duration: {end_time-start_time}\n")
 
-    # Distance Quality based Clustering with proto-clusters k-core Decomposition 10
-    start_time = time.time()
-    dq_clusters = maximize_distance_quality(G, 'proto_clusters_k_core', 10)
-    modularity_score, dq_modularity = evaluate_clusters(G, dq_clusters)
-    end_time = time.time()
-    export_to_gephi(G, dq_clusters, 'proto_clusters_k_core_10.gexf')
-    print(f"Distance Quality based Clustering with proto-clusters k-core Decomposition 10 nodes: Modularity = {modularity_score}, Distance Quality = {dq_modularity}, Duration: {end_time-start_time}\n")
+    # # Distance Quality based Clustering with proto-clusters k-core Decomposition 10
+    # start_time = time.time()
+    # dq_clusters = maximize_distance_quality(G, 'proto_clusters_k_core', 10)
+    # modularity_score, dq_modularity = evaluate_clusters(G, dq_clusters)
+    # end_time = time.time()
+    # export_to_gephi(G, dq_clusters, 'proto_clusters_k_core_10.gexf')
+    # print(f"Distance Quality based Clustering with proto-clusters k-core Decomposition 10 nodes: Modularity = {modularity_score}, Distance Quality = {dq_modularity}, Duration: {end_time-start_time}\n")
     
     # Distance Quality based Clustering with proto-clusters clustering_coeff 0.05
     start_time = time.time()
@@ -952,73 +947,13 @@ if __name__ == "__main__":
     modularity_score, dq_modularity = evaluate_clusters(G, dq_clusters)
     end_time = time.time()
     export_to_gephi(G, dq_clusters, 'proto_clusters_clustering_coeff_0.05.gexf')
-    print(f"Distance Quality based Clustering with proto-clusters clustering_coeff 0.05: Modularity = {modularity_score}, Distance Quality = {dq_modularity}, Duration: {end_time-start_time}\n")
+    print(f"Distance Quality based Clustering with proto-clusters clustering_coeff 0.01: Modularity = {modularity_score}, Distance Quality = {dq_modularity}, Duration: {end_time-start_time}\n")
 
     # Distance Quality based Clustering with proto-clusters clustering_coeff 0.1
-    start_time = time.time()
-    dq_clusters = maximize_distance_quality(G, 'proto_clusters_clustering_coeff', 0.1)
-    modularity_score, dq_modularity = evaluate_clusters(G, dq_clusters)
-    end_time = time.time()
-    export_to_gephi(G, dq_clusters, 'proto_clusters_clustering_coeff_0.1.gexf')
-    print(f"Distance Quality based Clustering with proto-clusters clustering_coeff 0.1: Modularity = {modularity_score}, Distance Quality = {dq_modularity}, Duration: {end_time-start_time}\n")
+    # start_time = time.time()
+    # dq_clusters = maximize_distance_quality(G, 'proto_clusters_clustering_coeff', 0.03)
+    # modularity_score, dq_modularity = evaluate_clusters(G, dq_clusters)
+    # end_time = time.time()
+    # export_to_gephi(G, dq_clusters, 'proto_clusters_clustering_coeff_0.03.gexf')
+    # print(f"Distance Quality based Clustering with proto-clusters clustering_coeff 0.03: Modularity = {modularity_score}, Distance Quality = {dq_modularity}, Duration: {end_time-start_time}\n")
     
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    # visualize_graph(G, modularity_clusters, 'Modularity Clusters')
-    # visualize_graph(G, dq_clusters, 'Distance Quality Clusters')
-
-    # Perform the search
-    # best_partition, max_qd, qd_values = maximize_distance_quality(
-    #     G, initial_partition, calculate_distance_quality
-    # )
-
-    # Visualize the results
-    # print("Best Partition:", best_partition)
-    # print("Maximum Q_d:", max_qd)
-    # print(f"qd_values.len = {len(qd_values)}")
-    # # Plot the progress of Q_d
-    # plt.plot(qd_values, marker='o')
-    # plt.title("Distance Quality (Q_d) Progress Over Iterations")
-    # plt.xlabel("Iteration")
-    # plt.ylabel("Q_d")
-    # plt.grid()
-    # plt.show()
-
-    # # Load the graph
-    # print("Loading the email-Eu-core network...")
-    # G = load_snap_email_network()
-    # print(f"Graph loaded with {G.number_of_nodes()} nodes and {G.number_of_edges()} edges.")
-    
-    # # Perform modularity-based clustering
-    # print("Performing modularity-based clustering...")
-    # communities, mod_score = modularity_clustering(G)
-    # print(f"Detected {len(communities)} communities.")
-    # print(f'Detected {mod_score} for modularity scores')
-    
-    # # Calculate Distance Quality
-    # distance_quality = calculate_distance_quality(G, communities)
-    # print(f"Distance Quality (Q_d): {distance_quality}")
-
-    # Export the graph with community labels for Gephi
-    # output_file = "email_eu_core_modularity_clusters.gexf"
-
-    # export_to_gephi(G, modularity_clusters, 'modularity_clusters')
-    # export_to_gephi(G, dq_clusters, 'distance_quality_clusters')
-    # print("All done!")
